@@ -51,18 +51,24 @@ function StatCard({ value, label, sub }: { value: string; label: string; sub?: s
   );
 }
 
-function GroupRow({ g, max }: { g: GroupStat; max: number }) {
+function GroupRow({ g }: { g: GroupStat }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 py-2 sm:grid-cols-[14rem_3rem_minmax(0,1fr)_3.5rem]">
-      <div className="truncate text-sm text-zinc-700" title={g.key}>
-        {g.key}
+    <div className="py-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="truncate text-sm text-zinc-700" title={g.key}>
+          {g.key}
+        </span>
+        <span className="flex shrink-0 items-baseline gap-3 text-xs tabular-nums">
+          <span className="text-zinc-400" title="number of replication effects">
+            {fmt(g.total)}
+          </span>
+          <span className="w-9 text-right font-semibold text-zinc-700" title="replication rate (successes ÷ coded)">
+            {(g.repRate * 100).toFixed(0)}%
+          </span>
+        </span>
       </div>
-      <div className="hidden text-right text-xs tabular-nums text-zinc-400 sm:block">{fmt(g.total)}</div>
-      <div className="col-span-2 sm:col-span-1">
+      <div className="mt-1.5">
         <StackBar counts={g.counts} total={g.total} />
-      </div>
-      <div className="hidden text-right text-xs font-medium tabular-nums text-zinc-600 sm:block">
-        {(g.repRate * 100).toFixed(0)}%
       </div>
     </div>
   );
@@ -77,19 +83,18 @@ function GroupSection({
   subtitle: string;
   groups: GroupStat[];
 }) {
-  const max = groups[0]?.total ?? 1;
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
       <div className="mb-1 flex items-baseline justify-between">
         <h2 className="text-sm font-semibold tracking-tight text-zinc-900">{title}</h2>
         <span className="hidden text-[0.7rem] uppercase tracking-wide text-zinc-400 sm:block">
-          n · outcome mix · replicated
+          n · replicated
         </span>
       </div>
       <p className="mb-3 text-xs text-zinc-500">{subtitle}</p>
       <div className="divide-y divide-zinc-100">
         {groups.map((g) => (
-          <GroupRow key={g.key} g={g} max={max} />
+          <GroupRow key={g.key} g={g} />
         ))}
       </div>
     </section>
@@ -207,6 +212,7 @@ function ShrinkPanel({ data }: { data: ReturnType<typeof shrink> }) {
 export default function Dashboard() {
   const [snap, setSnap] = useState<SnapshotData | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [jtab, setJtab] = useState<"volume" | "rate">("volume");
 
   useEffect(() => {
     loadSnapshot()
@@ -217,9 +223,14 @@ export default function Dashboard() {
   const a = useMemo(() => {
     if (!snap) return null;
     const e = snap.effects;
+    const journalsAll = groupBy(e, (x) => x.journal_original);
     return {
       ov: overview(e),
-      journals: groupBy(e, (x) => x.journal_original).slice(0, 15),
+      journals: journalsAll.slice(0, 15),
+      journalsByRate: journalsAll
+        .filter((g) => g.total >= 10)
+        .sort((p, q) => q.repRate - p.repRate || q.total - p.total)
+        .slice(0, 18),
       disciplines: groupBy(e, (x) => x.discipline).slice(0, 12),
       years: byYear(e),
       shr: shrink(e),
@@ -257,11 +268,43 @@ export default function Dashboard() {
         </div>
       </section>
 
-      <GroupSection
-        title="By journal"
-        subtitle="Top 15 source journals by number of replication effects. Bars show the outcome mix; the right figure is the replication rate among coded effects."
-        groups={a.journals}
-      />
+      <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold tracking-tight text-zinc-900">By journal</h2>
+          <div className="flex rounded-lg bg-zinc-100 p-0.5 text-xs font-medium">
+            {(
+              [
+                ["volume", "Most studied"],
+                ["rate", "Replication rate"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setJtab(id)}
+                className={`rounded-md px-2.5 py-1 transition ${
+                  jtab === id ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="mb-3 text-xs text-zinc-500">
+          {jtab === "volume"
+            ? "Top 15 source journals by number of replication effects. Bars show the outcome mix; the right figure is the replication rate among coded effects."
+            : "Journals with ≥ 10 effects, ranked by replication rate (successes ÷ coded effects). Higher = findings held up more often on replication."}
+        </p>
+        <div className="mb-1.5 hidden text-right text-[0.7rem] uppercase tracking-wide text-zinc-400 sm:block">
+          n · replicated
+        </div>
+        <div className="divide-y divide-zinc-100">
+          {(jtab === "volume" ? a.journals : a.journalsByRate).map((g) => (
+            <GroupRow key={g.key} g={g} />
+          ))}
+        </div>
+      </section>
+
       <GroupSection
         title="By discipline"
         subtitle="Top 12 disciplines by number of replication effects."
