@@ -5,16 +5,24 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-3xl px-5 py-12 sm:py-16">
       <header className="mb-8">
-        <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">FReD Semantic Explorer</h1>
-          <Link href="/dashboard" className="shrink-0 text-sm text-blue-700 hover:underline">
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-indigo-600">
+            FORRT · Replication Database
+          </span>
+          <Link
+            href="/dashboard"
+            className="rounded-full border border-zinc-200 bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 transition hover:border-indigo-200 hover:text-indigo-700"
+          >
             Sub-analyses →
           </Link>
         </div>
-        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-600">
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-zinc-900 sm:text-4xl">
+          FReD Semantic Explorer
+        </h1>
+        <p className="mt-3 max-w-2xl text-sm leading-relaxed text-zinc-600 sm:text-[0.95rem]">
           Search the{" "}
           <a
-            className="text-blue-700 hover:underline"
+            className="font-medium text-indigo-600 hover:underline"
             href="https://forrt.org/replication-hub/"
             target="_blank"
             rel="noreferrer"

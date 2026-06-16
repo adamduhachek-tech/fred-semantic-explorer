@@ -5,12 +5,20 @@ export default function DashboardPage() {
   return (
     <main className="mx-auto max-w-5xl px-5 py-12 sm:py-16">
       <header className="mb-8">
-        <nav className="mb-4 text-xs">
-          <Link href="/" className="text-blue-700 hover:underline">
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-indigo-600">
+            FORRT · Replication Database
+          </span>
+          <Link
+            href="/"
+            className="rounded-full border border-zinc-200 bg-white/70 px-3 py-1 text-xs font-medium text-zinc-600 transition hover:border-indigo-200 hover:text-indigo-700"
+          >
             ← Semantic search
           </Link>
-        </nav>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Replication Sub-Analyses</h1>
+        </div>
+        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl">
+          Replication Sub-Analyses
+        </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-600">
           The FORRT Replication Database cut by journal, discipline, time, and effect size. Outcome coding is the
           replication authors&rsquo; own narrative judgment — this describes the database, it does not adjudicate
