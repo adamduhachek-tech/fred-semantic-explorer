@@ -1,77 +1,105 @@
 /**
- * Tigris (S3-compatible) object-storage wrapper.
+ * Tigris object-storage wrapper — used ONLY by build-time scripts
+ * (scripts/ingest.ts, scripts/snapshot.ts), never at request time. Tigris is
+ * the system of record for raw/ + derived/ + embeddings/; the app reads a
+ * static snapshot from public/data/.
  *
- * Tigris is the system of record for raw + derived + vectors. The app does NOT
- * read Tigris at request time — a build step (scripts/snapshot.ts) pulls one
- * compact snapshot into public/data/. These helpers are used by the local/CI
- * ingest + snapshot scripts, never from the client.
+ * Why the `tigris` CLI instead of @aws-sdk/client-s3:
+ * The installed AWS SDK build produces an INVALID SigV4 signature for Tigris
+ * bucket operations in this environment — account-level ListBuckets signs and
+ * succeeds, but every PutObject variant (auto/us-east-1 region, virtual-hosted
+ * /path-style, checksums on/off) returns 403 SignatureDoesNotMatch. The
+ * authenticated Tigris CLI uploads/downloads reliably, so build-time object I/O
+ * goes through it. The CLI authenticates from its own stored credentials
+ * (`tigris configure`/login), independent of the AWS_* env vars.
  *
- * Credentials are read from the standard AWS env vars by the SDK's default
- * provider chain (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). See .env.local.
+ * If the SDK signing issue is later resolved, these helpers can be swapped back
+ * to @aws-sdk/client-s3 without changing callers.
  */
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  ListObjectsV2Command,
-  DeleteObjectCommand,
-} from "@aws-sdk/client-s3";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+import { writeFile, readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const ENDPOINT = process.env.AWS_ENDPOINT_URL_S3 ?? "https://t3.storage.dev";
-const REGION = process.env.AWS_REGION ?? "auto";
+const execAsync = promisify(exec);
 
 /** The Tigris bucket that holds raw/, derived/, and embeddings/. */
 export const BUCKET = process.env.TIGRIS_BUCKET ?? "replication";
 
-export const s3 = new S3Client({
-  endpoint: ENDPOINT,
-  region: REGION,
-  // Tigris supports virtual-hosted-style addressing (bucket.t3.storage.dev).
-  forcePathStyle: false,
-});
-
-/** Upload a single object. `body` may be bytes or a string. */
-export async function putObject(
-  key: string,
-  body: Uint8Array | Buffer | string,
-  contentType?: string,
-): Promise<void> {
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: body,
-      ContentType: contentType,
-    }),
-  );
+function uri(key: string): string {
+  return `t3://${BUCKET}/${key}`;
 }
 
-/** Download a single object as a Buffer. */
+async function tigris(argline: string): Promise<string> {
+  // Run the CLI with its OWN stored credentials. The AWS_* env vars (loaded
+  // from .env.local) make the CLI sign with that keypair, which fails PutObject
+  // for Tigris here; stripping them lets the CLI use ~/.tigris/config.json,
+  // which signs writes correctly.
+  const env = { ...process.env };
+  for (const k of [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_ENDPOINT_URL_S3",
+    "AWS_ENDPOINT_URL_IAM",
+    "AWS_REGION",
+  ]) {
+    delete env[k];
+  }
+  const { stdout } = await execAsync(`tigris ${argline}`, {
+    windowsHide: true,
+    maxBuffer: 256 * 1024 * 1024,
+    env,
+  });
+  return stdout;
+}
+
+async function withTemp<T>(fn: (path: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "fred-"));
+  const p = join(dir, "blob");
+  try {
+    return await fn(p);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Upload bytes/string under `key` (writes via a temp file -> `tigris cp`). */
+export async function putObject(key: string, body: Uint8Array | Buffer | string): Promise<void> {
+  await withTemp(async (p) => {
+    await writeFile(p, body);
+    await tigris(`cp "${p}" "${uri(key)}"`);
+  });
+}
+
+/** Upload an existing local file under `key` (no temp copy). */
+export async function putFile(key: string, localPath: string): Promise<void> {
+  await tigris(`cp "${localPath}" "${uri(key)}"`);
+}
+
+/** Download `key` as a Buffer. */
 export async function getObject(key: string): Promise<Buffer> {
-  const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
-  const bytes = await res.Body!.transformToByteArray();
-  return Buffer.from(bytes);
+  return withTemp(async (p) => {
+    await tigris(`cp "${uri(key)}" "${p}"`);
+    return readFile(p);
+  });
 }
 
-/** List object keys under a prefix (handles pagination). */
-export async function listObjects(prefix = ""): Promise<string[]> {
-  const keys: string[] = [];
-  let token: string | undefined;
-  do {
-    const res = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: BUCKET,
-        Prefix: prefix,
-        ContinuationToken: token,
-      }),
-    );
-    for (const o of res.Contents ?? []) if (o.Key) keys.push(o.Key);
-    token = res.IsTruncated ? res.NextContinuationToken : undefined;
-  } while (token);
-  return keys;
-}
-
-/** Delete a single object. Used to clean up healthcheck artifacts. */
+/** Delete `key`. */
 export async function removeObject(key: string): Promise<void> {
-  await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+  await tigris(`rm "${uri(key)}" --yes`);
+}
+
+/** List object keys under `prefix` (parses the CLI table output). */
+export async function listObjects(prefix = ""): Promise<string[]> {
+  const out = await tigris(`ls "${uri(prefix)}"`);
+  const keys: string[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.startsWith("│")) continue; // table data row: starts with │
+    const m = line.match(/^│\s*([^│]+?)\s*│/);
+    const name = m?.[1]?.trim();
+    if (name && name !== "Key") keys.push(prefix + name);
+  }
+  return keys;
 }

@@ -10,7 +10,7 @@ async function main() {
 
   console.log(`bucket: ${BUCKET}`);
 
-  await putObject(key, payload, "text/plain");
+  await putObject(key, payload);
   console.log(`wrote:  ${key}`);
 
   const back = (await getObject(key)).toString("utf8");
