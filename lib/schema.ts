@@ -38,6 +38,8 @@ export const FRED_COLUMNS = {
   ref_r: "ref_r",
   title_o: "title_o",
   title_r: "title_r",
+  journal_o: "journal_o",
+  journal_r: "journal_r",
   year_o: "year_o",
   year_r: "year_r",
   author_overlap: "author_overlap",
@@ -106,6 +108,8 @@ export interface Effect {
   ref_replication: string | null;
   title_original: string | null;
   title_replication: string | null;
+  journal_original: string | null;
+  journal_replication: string | null;
   year_original: number | null;
   year_replication: number | null;
 
@@ -196,6 +200,8 @@ export function buildEffect(row: RawRow): Effect {
     ref_replication: str(row[C.ref_r]),
     title_original: str(row[C.title_o]),
     title_replication: str(row[C.title_r]),
+    journal_original: str(row[C.journal_o]),
+    journal_replication: str(row[C.journal_r]),
     year_original: int(row[C.year_o]),
     year_replication: int(row[C.year_r]),
 

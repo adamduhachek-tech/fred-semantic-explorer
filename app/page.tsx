@@ -1,10 +1,16 @@
+import Link from "next/link";
 import SemanticSearch from "@/components/SemanticSearch";
 
 export default function Home() {
   return (
     <main className="mx-auto max-w-3xl px-5 py-12 sm:py-16">
       <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">FReD Semantic Explorer</h1>
+        <div className="flex items-baseline justify-between gap-4">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">FReD Semantic Explorer</h1>
+          <Link href="/dashboard" className="shrink-0 text-sm text-blue-700 hover:underline">
+            Sub-analyses →
+          </Link>
+        </div>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-600">
           Search the{" "}
           <a
