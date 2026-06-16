@@ -12,14 +12,19 @@ function rate(c: Counts, total: number): number {
   return judged > 0 ? c.success / judged : 0;
 }
 
-/** Title-case + casing-merge for the noisy discipline field (e.g. "cognitive psychology"). */
+/** Composite/topic discipline labels → an existing canonical discipline (audit). */
+const DISCIPLINE_ALIASES: Record<string, string> = {
+  "marketing/org behavior": "Marketing",
+  "social/cognitive psychology": "Social Psychology",
+  "gender stereotypes": "Social Psychology",
+};
+
+/** Title-case + casing-merge + alias-map for the noisy discipline field. */
 export function canonicalDiscipline(d: string | null | undefined): string | null {
   if (!d) return null;
-  return d
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+  const key = d.trim().toLowerCase().replace(/\s+/g, " ");
+  if (DISCIPLINE_ALIASES[key]) return DISCIPLINE_ALIASES[key];
+  return key.replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
 /**

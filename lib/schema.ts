@@ -126,12 +126,8 @@ function codePoint(n: number): string {
   return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : "";
 }
 
-/**
- * Decode HTML entities that arrive in CrossRef-sourced text (the FReD data has
- * literal "&amp;" in journal/reference fields, e.g. "Memory &amp; Cognition").
- * &amp; is decoded LAST so doubly-encoded sequences resolve correctly.
- */
-function decodeEntities(s: string): string {
+/** One decoding pass; &amp; is decoded last so doubly-encoded sequences resolve. */
+function decodeOnce(s: string): string {
   return s
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -143,10 +139,31 @@ function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** Trim, decode HTML entities, collapse whitespace; map NA-like values to null. */
+/** Decode repeatedly to handle doubly-encoded entities (the data has "&amp;amp;"). */
+function decodeEntities(s: string): string {
+  let prev = s;
+  for (let i = 0; i < 4; i++) {
+    const next = decodeOnce(prev);
+    if (next === prev) break;
+    prev = next;
+  }
+  return prev;
+}
+
+/**
+ * Strip HTML/XML markup that leaks from CrossRef metadata into titles/refs
+ * (<scp>, <i>, <sup>, and Wiley DOI fragments like "<107::aid-bdm292>"). Only
+ * letter- or digit-initial tags match, so math text like "p < .05" / "(>" is
+ * left untouched.
+ */
+function stripMarkup(s: string): string {
+  return s.replace(/<\/?[a-zA-Z][^>]*>/g, "").replace(/<\d[^>]*>/g, "");
+}
+
+/** Decode entities, strip markup, collapse whitespace; map NA-like values to null. */
 export function str(v: unknown): string | null {
   if (v == null) return null;
-  const s = decodeEntities(String(v)).replace(/\s+/g, " ").trim();
+  const s = stripMarkup(decodeEntities(String(v))).replace(/\s+/g, " ").trim();
   return NA.has(s.toLowerCase()) ? null : s;
 }
 
@@ -163,6 +180,12 @@ export function num(v: unknown): number | null {
 export function int(v: unknown): number | null {
   const n = num(v);
   return n == null ? null : Math.round(n);
+}
+
+/** Numeric effect size with a sanity ceiling; rejects garbage like an OR of 1.88e11. */
+export function esNum(v: unknown): number | null {
+  const n = num(v);
+  return n != null && Math.abs(n) > 1e5 ? null : n;
 }
 
 export function bool(v: unknown): boolean | null {
@@ -192,6 +215,11 @@ export function buildEffect(row: RawRow): Effect {
   const entry = str(row[C.entry_id]) ?? "";
   const effect = str(row[C.effect_id]) ?? "";
   const outcomeRaw = str(row[C.reported_success]);
+  // A replication cannot predate its original — null an impossible original year
+  // (these are CrossRef scrape-date artifacts, e.g. classic works tagged 2024).
+  const yearO = int(row[C.year_o]);
+  const yearR = int(row[C.year_r]);
+  const yearOriginal = yearO != null && yearR != null && yearR < yearO ? null : yearO;
   return {
     id: `${entry}-${effect}`,
     fred_id: str(row[C.fred_id]),
@@ -203,10 +231,10 @@ export function buildEffect(row: RawRow): Effect {
     outcome_raw: outcomeRaw,
     outcome_quote: str(row[C.reported_success_quote]),
 
-    es_original: num(row[C.es_value_o]),
+    es_original: esNum(row[C.es_value_o]),
     es_original_raw: str(row[C.es_value_o]),
     es_type_original: str(row[C.es_type_o]),
-    es_replication: num(row[C.es_value_r]),
+    es_replication: esNum(row[C.es_value_r]),
     es_replication_raw: str(row[C.es_value_r]),
     es_type_replication: str(row[C.es_type_r]),
 
@@ -224,8 +252,8 @@ export function buildEffect(row: RawRow): Effect {
     title_replication: str(row[C.title_r]),
     journal_original: str(row[C.journal_o]),
     journal_replication: str(row[C.journal_r]),
-    year_original: int(row[C.year_o]),
-    year_replication: int(row[C.year_r]),
+    year_original: yearOriginal,
+    year_replication: yearR,
 
     author_overlap: bool(row[C.author_overlap]),
     author_overlap_pct: num(row[C.author_overlap_pct]),
