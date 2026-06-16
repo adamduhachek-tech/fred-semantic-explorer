@@ -122,9 +122,31 @@ export interface Effect {
 
 const NA = new Set(["", "na", "n/a", "nan", "null", "none", "-"]);
 
+function codePoint(n: number): string {
+  return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : "";
+}
+
+/**
+ * Decode HTML entities that arrive in CrossRef-sourced text (the FReD data has
+ * literal "&amp;" in journal/reference fields, e.g. "Memory &amp; Cognition").
+ * &amp; is decoded LAST so doubly-encoded sequences resolve correctly.
+ */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;|&#0*39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#(\d+);/g, (_, n) => codePoint(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => codePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, "&");
+}
+
+/** Trim, decode HTML entities, collapse whitespace; map NA-like values to null. */
 export function str(v: unknown): string | null {
   if (v == null) return null;
-  const s = String(v).trim();
+  const s = decodeEntities(String(v)).replace(/\s+/g, " ").trim();
   return NA.has(s.toLowerCase()) ? null : s;
 }
 

@@ -1,51 +1,102 @@
 /** Pure aggregations for the dashboard, computed client-side from the snapshot. */
 import type { SnapshotEffect } from "./snapshot";
 import type { Outcome } from "./schema";
+import { canonicalJournal } from "./journals";
 
 export type Counts = Record<Outcome, number>;
 const empty = (): Counts => ({ success: 0, failure: 0, mixed: 0, inconclusive: 0, other: 0 });
 
-/** Replication rate = successes / judged effects (uncoded excluded from the denominator). */
+/** Replication rate = successes / judged units (uncoded excluded from the denominator). */
 function rate(c: Counts, total: number): number {
   const judged = total - c.other;
   return judged > 0 ? c.success / judged : 0;
 }
 
-export interface GroupStat {
-  key: string;
-  total: number;
-  counts: Counts;
-  repRate: number;
+/** Title-case + casing-merge for the noisy discipline field (e.g. "cognitive psychology"). */
+export function canonicalDiscipline(d: string | null | undefined): string | null {
+  if (!d) return null;
+  return d
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
-export function groupBy(
+/**
+ * Reduce one study's per-effect outcomes to a single study outcome: the modal
+ * coded outcome; ties resolve to "mixed"; all-uncoded → "other". This is what
+ * makes per-journal rates honest — a paper split into 76 effect rows counts as
+ * one study, not 76 data points.
+ */
+function studyOutcome(outcomes: Outcome[]): Outcome {
+  const c = empty();
+  for (const o of outcomes) c[o]++;
+  const coded: Outcome[] = ["success", "failure", "mixed", "inconclusive"];
+  let best: Outcome = "other";
+  let bestN = 0;
+  let tie = false;
+  for (const o of coded) {
+    if (c[o] > bestN) {
+      best = o;
+      bestN = c[o];
+      tie = false;
+    } else if (c[o] === bestN && bestN > 0) {
+      tie = true;
+    }
+  }
+  if (bestN === 0) return "other";
+  return tie ? "mixed" : best;
+}
+
+export interface GroupStat {
+  key: string;
+  studies: number; // distinct original papers (doi_original)
+  effects: number; // effect rows
+  counts: Counts; // study-level outcome distribution
+  repRate: number; // study-level replication rate
+}
+
+/**
+ * Group effects by `keyFn`, then aggregate to the STUDY (distinct doi_original)
+ * level within each group. Effects sharing a key but no doi each count as their
+ * own study (doi_original is ~100% populated in FReD, so this is rare).
+ */
+export function groupByStudy(
   effects: SnapshotEffect[],
   keyFn: (e: SnapshotEffect) => string | null | undefined,
 ): GroupStat[] {
-  const map = new Map<string, GroupStat>();
+  const groups = new Map<string, { studies: Map<string, Outcome[]>; effects: number }>();
   for (const e of effects) {
     const k = keyFn(e);
     if (!k) continue;
-    let g = map.get(k);
+    let g = groups.get(k);
     if (!g) {
-      g = { key: k, total: 0, counts: empty(), repRate: 0 };
-      map.set(k, g);
+      g = { studies: new Map(), effects: 0 };
+      groups.set(k, g);
     }
-    g.total++;
-    g.counts[e.outcome]++;
+    g.effects++;
+    const studyId = e.doi_original ?? `effect:${e.id}`;
+    const arr = g.studies.get(studyId);
+    if (arr) arr.push(e.outcome);
+    else g.studies.set(studyId, [e.outcome]);
   }
-  const arr = [...map.values()];
-  for (const g of arr) g.repRate = rate(g.counts, g.total);
-  return arr.sort((a, b) => b.total - a.total);
+  const out: GroupStat[] = [];
+  for (const [key, g] of groups) {
+    const counts = empty();
+    for (const outcomes of g.studies.values()) counts[studyOutcome(outcomes)]++;
+    out.push({ key, studies: g.studies.size, effects: g.effects, counts, repRate: rate(counts, g.studies.size) });
+  }
+  return out.sort((a, b) => b.studies - a.studies || b.effects - a.effects);
 }
 
 export interface Overview {
-  total: number;
-  journals: number;
+  total: number; // effect rows
+  studies: number; // distinct original papers
+  journals: number; // distinct real journals (post-cleaning)
   disciplines: number;
-  origPapers: number;
-  outcome: Counts;
-  repRate: number;
+  outcome: Counts; // effect-level outcome distribution
+  repRate: number; // effect-level replication rate
+  nonJournalEffects: number; // effects whose source is not a journal (excluded from by-journal)
 }
 
 export function overview(effects: SnapshotEffect[]): Overview {
@@ -53,19 +104,24 @@ export function overview(effects: SnapshotEffect[]): Overview {
   const journals = new Set<string>();
   const disciplines = new Set<string>();
   const papers = new Set<string>();
+  let nonJournalEffects = 0;
   for (const e of effects) {
     outcome[e.outcome]++;
-    if (e.journal_original) journals.add(e.journal_original);
-    if (e.discipline) disciplines.add(e.discipline);
+    const j = canonicalJournal(e.journal_original);
+    if (j) journals.add(j);
+    else if (e.journal_original) nonJournalEffects++;
+    const d = canonicalDiscipline(e.discipline);
+    if (d) disciplines.add(d);
     if (e.doi_original) papers.add(e.doi_original);
   }
   return {
     total: effects.length,
+    studies: papers.size,
     journals: journals.size,
     disciplines: disciplines.size,
-    origPapers: papers.size,
     outcome,
     repRate: rate(outcome, effects.length),
+    nonJournalEffects,
   };
 }
 
@@ -75,7 +131,7 @@ export interface YearBin {
   counts: Counts;
 }
 
-export function byYear(effects: SnapshotEffect[], minYear = 1995, maxYear = 2025): YearBin[] {
+export function byYear(effects: SnapshotEffect[], minYear = 1930, maxYear = 2026): YearBin[] {
   const map = new Map<number, YearBin>();
   for (const e of effects) {
     const y = e.year_original;

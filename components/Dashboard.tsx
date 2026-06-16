@@ -2,9 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { loadSnapshot, type SnapshotData } from "@/lib/snapshot";
-import { byYear, groupBy, overview, shrink, type Counts, type GroupStat, type YearBin } from "@/lib/analytics";
+import {
+  byYear,
+  canonicalDiscipline,
+  groupByStudy,
+  overview,
+  shrink,
+  type Counts,
+  type GroupStat,
+  type YearBin,
+} from "@/lib/analytics";
+import { canonicalJournal } from "@/lib/journals";
 import { OUTCOME_META, OUTCOME_ORDER } from "@/lib/outcome";
-import type { Outcome } from "@/lib/schema";
 
 const pct = (n: number, d: number) => (d ? (100 * n) / d : 0);
 const fmt = (n: number) => n.toLocaleString();
@@ -51,6 +60,7 @@ function StatCard({ value, label, sub }: { value: string; label: string; sub?: s
   );
 }
 
+/** Group row: name + (papers · effects · study-level replication rate) + study-level bar. */
 function GroupRow({ g }: { g: GroupStat }) {
   return (
     <div className="py-2">
@@ -59,37 +69,32 @@ function GroupRow({ g }: { g: GroupStat }) {
           {g.key}
         </span>
         <span className="flex shrink-0 items-baseline gap-3 text-xs tabular-nums">
-          <span className="text-zinc-400" title="number of replication effects">
-            {fmt(g.total)}
+          <span className="w-8 text-right text-zinc-500" title="distinct original papers">
+            {fmt(g.studies)}
           </span>
-          <span className="w-9 text-right font-semibold text-zinc-700" title="replication rate (successes ÷ coded)">
+          <span className="w-10 text-right text-zinc-400" title="effect rows">
+            {fmt(g.effects)}
+          </span>
+          <span className="w-9 text-right font-semibold text-zinc-700" title="studies replicated ÷ coded studies">
             {(g.repRate * 100).toFixed(0)}%
           </span>
         </span>
       </div>
       <div className="mt-1.5">
-        <StackBar counts={g.counts} total={g.total} />
+        <StackBar counts={g.counts} total={g.studies} />
       </div>
     </div>
   );
 }
 
-function GroupSection({
-  title,
-  subtitle,
-  groups,
-}: {
-  title: string;
-  subtitle: string;
-  groups: GroupStat[];
-}) {
+const COLS_HINT = "papers · effects · replicated";
+
+function GroupSection({ title, subtitle, groups }: { title: string; subtitle: string; groups: GroupStat[] }) {
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
       <div className="mb-1 flex items-baseline justify-between">
         <h2 className="text-sm font-semibold tracking-tight text-zinc-900">{title}</h2>
-        <span className="hidden text-[0.7rem] uppercase tracking-wide text-zinc-400 sm:block">
-          n · replicated
-        </span>
+        <span className="hidden text-[0.7rem] uppercase tracking-wide text-zinc-400 sm:block">{COLS_HINT}</span>
       </div>
       <p className="mb-3 text-xs text-zinc-500">{subtitle}</p>
       <div className="divide-y divide-zinc-100">
@@ -113,7 +118,8 @@ function YearChart({ bins }: { bins: YearBin[] }) {
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
       <h2 className="mb-1 text-sm font-semibold tracking-tight text-zinc-900">Replications over time</h2>
       <p className="mb-3 text-xs text-zinc-500">
-        Effects by original publication year, stacked by replication outcome.
+        Effects by original publication year ({bins[0]?.year ?? "?"}–{bins[bins.length - 1]?.year ?? "?"}), stacked by
+        replication outcome.
       </p>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="replications by year">
         {[0, 0.5, 1].map((f) => {
@@ -137,19 +143,12 @@ function YearChart({ bins }: { bins: YearBin[] }) {
                 if (h <= 0) return null;
                 yTop -= h;
                 return (
-                  <rect
-                    key={o}
-                    x={x + 1}
-                    y={yTop}
-                    width={Math.max(0, bw - 2)}
-                    height={h}
-                    fill={OUTCOME_META[o].hex}
-                  >
+                  <rect key={o} x={x + 1} y={yTop} width={Math.max(0, bw - 2)} height={h} fill={OUTCOME_META[o].hex}>
                     <title>{`${b.year} · ${OUTCOME_META[o].label}: ${b.counts[o]}`}</title>
                   </rect>
                 );
               })}
-              {b.year % 5 === 0 && (
+              {b.year % 10 === 0 && (
                 <text x={x + bw / 2} y={H - 6} fontSize={9} fill="#a1a1aa" textAnchor="middle">
                   {b.year}
                 </text>
@@ -165,29 +164,40 @@ function YearChart({ bins }: { bins: YearBin[] }) {
 function ShrinkPanel({ data }: { data: ReturnType<typeof shrink> }) {
   const S = 240;
   const PAD = 26;
-  const sc = (v: number) => PAD + ((v + 1) / 2) * (S - 2 * PAD); // map [-1,1] -> [PAD, S-PAD]
+  const sc = (v: number) => PAD + v * (S - 2 * PAD); // map [0,1] -> [PAD, S-PAD]
   const scY = (v: number) => S - sc(v);
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
       <h2 className="mb-1 text-sm font-semibold tracking-tight text-zinc-900">Effects shrink on replication</h2>
       <p className="mb-3 text-xs text-zinc-500">
-        Original vs. replication effect size, among {fmt(data.points.length)} Pearson-<em>r</em> pairs. Points below
-        the diagonal shrank.
+        Original vs. replication <em>|effect size|</em>, among {fmt(data.points.length)} Pearson-<em>r</em> pairs.
+        Points below the dashed diagonal shrank toward zero.
       </p>
       <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center">
         <svg viewBox={`0 0 ${S} ${S}`} className="w-full max-w-[260px] shrink-0" role="img" aria-label="effect size scatter">
-          <rect x={PAD} y={PAD} width={S - 2 * PAD} height={S - 2 * PAD} fill="none" stroke="#f4f4f5" />
-          <line x1={sc(0)} y1={PAD} x2={sc(0)} y2={S - PAD} stroke="#e4e4e7" />
-          <line x1={PAD} y1={scY(0)} x2={S - PAD} y2={scY(0)} stroke="#e4e4e7" />
-          <line x1={sc(-1)} y1={scY(-1)} x2={sc(1)} y2={scY(1)} stroke="#a1a1aa" strokeDasharray="3 3" />
+          <rect x={PAD} y={PAD} width={S - 2 * PAD} height={S - 2 * PAD} fill="none" stroke="#e4e4e7" />
+          {[0.5, 1].map((t) => (
+            <g key={t}>
+              <line x1={sc(t)} y1={PAD} x2={sc(t)} y2={S - PAD} stroke="#f4f4f5" />
+              <line x1={PAD} y1={scY(t)} x2={S - PAD} y2={scY(t)} stroke="#f4f4f5" />
+            </g>
+          ))}
+          <line x1={sc(0)} y1={scY(0)} x2={sc(1)} y2={scY(1)} stroke="#a1a1aa" strokeDasharray="3 3" />
           {data.points.map((p, i) => (
-            <circle key={i} cx={sc(p.o)} cy={scY(p.r)} r={2.2} fill={OUTCOME_META[p.outcome].hex} fillOpacity={0.55} />
+            <circle
+              key={i}
+              cx={sc(Math.abs(p.o))}
+              cy={scY(Math.abs(p.r))}
+              r={2.2}
+              fill={OUTCOME_META[p.outcome].hex}
+              fillOpacity={0.55}
+            />
           ))}
           <text x={S / 2} y={S - 6} fontSize={9} fill="#a1a1aa" textAnchor="middle">
-            original r →
+            original |r| →
           </text>
           <text x={10} y={S / 2} fontSize={9} fill="#a1a1aa" textAnchor="middle" transform={`rotate(-90 10 ${S / 2})`}>
-            replication r →
+            replication |r| →
           </text>
         </svg>
         <div className="grid grid-cols-3 gap-3 sm:grid-cols-1">
@@ -223,15 +233,15 @@ export default function Dashboard() {
   const a = useMemo(() => {
     if (!snap) return null;
     const e = snap.effects;
-    const journalsAll = groupBy(e, (x) => x.journal_original);
+    const journalsAll = groupByStudy(e, (x) => canonicalJournal(x.journal_original));
     return {
       ov: overview(e),
       journals: journalsAll.slice(0, 15),
       journalsByRate: journalsAll
-        .filter((g) => g.total >= 10)
-        .sort((p, q) => q.repRate - p.repRate || q.total - p.total)
+        .filter((g) => g.studies >= 5)
+        .sort((p, q) => q.repRate - p.repRate || q.studies - p.studies)
         .slice(0, 18),
-      disciplines: groupBy(e, (x) => x.discipline).slice(0, 12),
+      disciplines: groupByStudy(e, (x) => canonicalDiscipline(x.discipline)).slice(0, 12),
       years: byYear(e),
       shr: shrink(e),
     };
@@ -243,19 +253,19 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard value={fmt(a.ov.total)} label="replication effects" sub={`${fmt(a.ov.origPapers)} original papers`} />
-        <StatCard value={fmt(a.ov.journals)} label="journals" />
+        <StatCard value={fmt(a.ov.studies)} label="original studies" sub={`${fmt(a.ov.total)} effect rows`} />
+        <StatCard value={fmt(a.ov.journals)} label="journals" sub="non-journal sources excluded" />
         <StatCard value={fmt(a.ov.disciplines)} label="disciplines" />
         <StatCard
           value={`${(a.ov.repRate * 100).toFixed(0)}%`}
-          label="replicated"
-          sub={`of ${fmt(a.ov.total - a.ov.outcome.other)} coded`}
+          label="effects replicated"
+          sub={`of ${fmt(a.ov.total - a.ov.outcome.other)} coded effects`}
         />
       </div>
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
         <div className="mb-3 flex items-baseline justify-between gap-3">
-          <h2 className="text-sm font-semibold tracking-tight text-zinc-900">Overall outcome mix</h2>
+          <h2 className="text-sm font-semibold tracking-tight text-zinc-900">Overall outcome mix (effects)</h2>
           <Legend />
         </div>
         <StackBar counts={a.ov.outcome} total={a.ov.total} />
@@ -292,22 +302,27 @@ export default function Dashboard() {
         </div>
         <p className="mb-3 text-xs text-zinc-500">
           {jtab === "volume"
-            ? "Top 15 source journals by number of replication effects. Bars show the outcome mix; the right figure is the replication rate among coded effects."
-            : "Journals with ≥ 10 effects, ranked by replication rate (successes ÷ coded effects). Higher = findings held up more often on replication."}
+            ? "Top 15 journals by number of distinct original papers. Rates are study-level — a paper split into many effect rows counts once."
+            : "Journals with ≥ 5 replicated-or-tested papers, ranked by the share of their papers that replicated (study-level, so an over-decomposed single paper can't skew the rate)."}
         </p>
         <div className="mb-1.5 hidden text-right text-[0.7rem] uppercase tracking-wide text-zinc-400 sm:block">
-          n · replicated
+          {COLS_HINT}
         </div>
         <div className="divide-y divide-zinc-100">
           {(jtab === "volume" ? a.journals : a.journalsByRate).map((g) => (
             <GroupRow key={g.key} g={g} />
           ))}
         </div>
+        <p className="mt-3 text-[0.7rem] text-zinc-400">
+          {fmt(a.ov.nonJournalEffects)} effects from non-journal sources (theses, books, conference proceedings) are
+          excluded from this view. Replication rate = studies whose modal effect outcome was “replicated” ÷ coded
+          studies.
+        </p>
       </section>
 
       <GroupSection
         title="By discipline"
-        subtitle="Top 12 disciplines by number of replication effects."
+        subtitle="Top 12 disciplines by number of distinct original papers (study-level rates; casing variants merged)."
         groups={a.disciplines}
       />
 
