@@ -1,0 +1,3 @@
+# The precomputed corpus is binary — never apply CRLF/text normalization to it.
+public/data/effects.vectors.bin binary -text
+*.bin binary -text

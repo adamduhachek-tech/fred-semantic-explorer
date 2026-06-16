@@ -36,8 +36,8 @@ yarn-error.log*
 # local dev server log + locally-downloaded source data
 .devserver.log
 /data/
-# generated app bundle (regenerate via scripts/snapshot.ts; built in CI/deploy)
-/public/data/
+# NB: /public/data/ (the precomputed corpus bundle) is intentionally COMMITTED
+# so a fresh clone / deploy is self-contained — see .gitattributes for the .bin.
 
 # vercel
 .vercel
