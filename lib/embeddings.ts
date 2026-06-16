@@ -16,7 +16,14 @@ const MODEL = process.env.EMBED_MODEL ?? "openai/text-embedding-3-small";
 export const EMBED_DIMS = Number(process.env.EMBED_DIMS ?? 512);
 
 function apiKey(): string {
-  const k = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY;
+  // Keep only printable ASCII (0x21-0x7E). An API key is entirely in this range,
+  // so this is a no-op for a clean key but strips a stray BOM (U+FEFF), spaces,
+  // or control chars that can sneak into an env var (dashboard paste / a
+  // BOM-writing shell) and would otherwise break the "Bearer <key>" header.
+  const k = (process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? "").replace(
+    /[^\x21-\x7e]/g,
+    "",
+  );
   if (!k) throw new Error("No embeddings API key (set OPENROUTER_API_KEY)");
   return k;
 }
