@@ -36,6 +36,8 @@ yarn-error.log*
 # local dev server log + locally-downloaded source data
 .devserver.log
 /data/
+# generated app bundle (regenerate via scripts/snapshot.ts; built in CI/deploy)
+/public/data/
 
 # vercel
 .vercel

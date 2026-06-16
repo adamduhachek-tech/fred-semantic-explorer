@@ -13,10 +13,20 @@
  */
 import { mkdir, writeFile, stat, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import ExcelJS from "exceljs";
 import Papa from "papaparse";
+import { UMAP } from "umap-js";
 import { putObject, putFile } from "../lib/tigris";
-import { buildEffect, mapOutcome, OUTCOMES, type Effect, type RawRow } from "../lib/schema";
+import {
+  buildEffect,
+  mapOutcome,
+  OUTCOMES,
+  embeddingText,
+  type Effect,
+  type RawRow,
+} from "../lib/schema";
+import { embedBatch, EMBED_DIMS } from "../lib/embeddings";
 
 const DATA_DIR = join(process.cwd(), "data");
 
@@ -170,6 +180,45 @@ function validateAndReport(effects: Effect[]): void {
   console.log(`  unique ids: ${ids.size}/${total}${ids.size !== total ? "  <-- DUPLICATES" : ""}`);
 }
 
+/** Seeded PRNG so UMAP layout is deterministic across runs. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Embed `texts`, caching by content hash so re-runs don't re-spend. */
+async function embedCorpus(texts: string[]): Promise<number[][]> {
+  const cachePath = join(DATA_DIR, "embed-cache.json");
+  let cache: Record<string, number[]> = {};
+  try {
+    cache = JSON.parse(await readFile(cachePath, "utf8"));
+  } catch {
+    /* no cache yet */
+  }
+  const keyOf = (t: string) => createHash("sha1").update(`${EMBED_DIMS}:${t}`).digest("hex");
+  const out: (number[] | null)[] = texts.map((t) => cache[keyOf(t)] ?? null);
+  const todo = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+  console.log(`  cache hits ${texts.length - todo.length}/${texts.length}; to embed ${todo.length}`);
+
+  const BATCH = 100;
+  for (let i = 0; i < todo.length; i += BATCH) {
+    const idx = todo.slice(i, i + BATCH);
+    const vecs = await embedBatch(idx.map((j) => texts[j]));
+    idx.forEach((j, k) => {
+      out[j] = vecs[k];
+      cache[keyOf(texts[j])] = vecs[k];
+    });
+    console.log(`    embedded ${Math.min(i + BATCH, todo.length)}/${todo.length}`);
+  }
+  await writeFile(cachePath, JSON.stringify(cache));
+  return out as number[][];
+}
+
 async function main() {
   const inspectOnly = process.argv.includes("--inspect-only");
   await mkdir(DATA_DIR, { recursive: true });
@@ -208,12 +257,39 @@ async function main() {
   await putObject("derived/effects.json", JSON.stringify(effects));
   console.log(`  uploaded derived/effects.json -> Tigris`);
 
-  if (!process.env.OPENAI_API_KEY) {
-    console.log(`\n[7] embeddings SKIPPED — OPENAI_API_KEY not set.`);
-    console.log(`    Re-run with the key in .env.local to embed + UMAP + write vectors.`);
+  if (!process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY) {
+    console.log(`\n[7] embeddings SKIPPED — no OPENROUTER_API_KEY/OPENAI_API_KEY in env.`);
     return;
   }
-  console.log(`\n[7] OPENAI_API_KEY present — embedding step will run (added next).`);
+
+  console.log(`\n[7] embed ${process.env.EMBED_MODEL} @ ${EMBED_DIMS} dims`);
+  // Only embed effects that have text; keep the subset aligned to the vectors.
+  const corpus = effects
+    .map((e) => ({ e, text: embeddingText(e) }))
+    .filter((c) => c.text.trim().length > 0);
+  console.log(`  embeddable ${corpus.length}/${effects.length} (rest have no description/title/keywords)`);
+  const vectors = await embedCorpus(corpus.map((c) => c.text));
+
+  console.log(`[8] UMAP -> 2D (seeded)`);
+  const umap = new UMAP({ nComponents: 2, nNeighbors: 15, minDist: 0.1, random: mulberry32(42) });
+  const xy = umap.fit(vectors);
+
+  console.log(`[9] write vectors + meta`);
+  const meta = corpus.map((c, k) => ({ ...c.e, x: xy[k][0], y: xy[k][1] }));
+  const flat = new Float32Array(vectors.length * EMBED_DIMS);
+  vectors.forEach((v, k) => flat.set(v, k * EMBED_DIMS));
+  const binPath = join(DATA_DIR, "effects.vectors.bin");
+  const metaPath = join(DATA_DIR, "effects.meta.json");
+  await writeFile(binPath, Buffer.from(flat.buffer));
+  await writeFile(
+    metaPath,
+    JSON.stringify({ dims: EMBED_DIMS, model: process.env.EMBED_MODEL, count: meta.length, effects: meta }),
+  );
+  const expect = meta.length * EMBED_DIMS * 4;
+  console.log(`  vectors.bin ${flat.byteLength.toLocaleString()} B; count*dims*4 = ${expect.toLocaleString()}; match ${flat.byteLength === expect}`);
+  await putFile("embeddings/effects.vectors.bin", binPath);
+  await putFile("embeddings/effects.meta.json", metaPath);
+  console.log(`  uploaded embeddings/effects.vectors.bin + effects.meta.json -> Tigris`);
 }
 
 main().catch((e) => {
